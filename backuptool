@@ -1,0 +1,278 @@
+#!/bin/bash
+# author : kmj@infose.net
+# date : 2018/07/09
+
+set -e
+
+#if ! rpm -q percona-xtrabackup-24 > /dev/null 2>&1; then
+#    echo "Percona XtraBackup 툴이 설치 되어 있지 않습니다."
+#    echo "설치중..."
+#    rpm -q epel-release >/dev/null 2>&1 || yum install -y -q epel-release
+#    rpm -q percona-release >/dev/null 2>&1 || yum install -y -q http://www.percona.com/downloads/percona-release/redhat/0.1-6/percona-release-0.1-6.noarch.rpm || exit 1
+#    rpm -q percona-xtrabackup-24 >/dev/null 2>&1 || yum install -y -q percona-xtrabackup-24 qpress || exit 1
+#    echo "설치완료."
+#fi
+
+VERSION=v0.0.3
+SCRIPTNAME=$(basename $0)
+HOST="localhost"
+PORT="3306"
+USER="root"
+PASS=""
+DATADIR="/var/lib/mysql"
+WORKDIR="/data"
+BACKUPDIR="$WORKDIR/backups"
+EXPIRE_DAYS=3
+EXTRADIR="$WORKDIR/extras"
+LOGDIR="$WORKDIR/logs"
+RESTOREDIR="$WORKDIR/restore"
+RESTORE_DATE="$(date +%Y-%m-%d)"
+PROCESSORS=$(nproc --all)
+XTRABACKUP=innobackupex
+
+if which mariabackup &> /dev/null; then
+    XTRABACKUP=$(which mariabackup)
+elif which xtrabackup &> /dev/null; then
+    XTRABACKUP=$(which xtrabackup)
+fi
+
+function usage {
+    cat <<EOF
+$SCRIPTNAME $VERSION MariaDB 백업 / 복구 Tool.
+Usage:
+    $SCRIPTNAME [subcommand] [<options>]
+Subcommand:
+    backup:
+        데이타 백업
+        $SCRIPTNAME backup [<options>]
+        options:
+            -h : MySQL host (default: $HOST).
+            -u : MySQL 사용자 계정 (default: $USER).
+            -p : MySQL 계정 암호 (default: $PASS).
+            -P : MySQL 포트 (default: $PORT).
+            -d : data 경로 (default: $DATADIR).
+    restore:
+        데이타 복구
+        $SCRIPTNAME restore [<options>]
+        options:
+            -d : data 경로 (default: $DATADIR).
+            -r : 복구 날짜 (default: $RESTORE_DATE).
+Options:
+    -h : 도움말
+    -e : 백업 파일 보관기간 (default: $EXPIRE_DAYS일)
+    -w : 작업 폴더 (default: $WORKDIR)
+    -t : 쓰레드 갯수 (default: $PROCESSORS)
+
+EOF
+}
+
+function backup() {
+    echo "백업 시작"
+
+    sudo chown -R mysql: $DATADIR
+    sudo find $DATADIR -type d -exec chmod 770 "{}" \;
+
+    if [ ! -d $BACKUPDIR/$(date +%Y-%m-%d) ] ; then
+        mkdir -p $BACKUPDIR/$(date +%Y-%m-%d)
+    fi
+
+    if [ ! -d $LOGDIR/$(date +%Y-%m-%d) ] ; then
+        mkdir -p $LOGDIR/$(date +%Y-%m-%d)
+    fi
+
+    if [ ! -d $EXTRADIR/$(date +%Y-%m-%d) ] ; then
+        mkdir -p $EXTRADIR/$(date +%Y-%m-%d)
+    fi
+
+    if [ -f $BACKUPDIR/$(date +%Y-%m-%d)/full.xbstream.incomplete ] ; then
+        rm $BACKUPDIR/$(date +%Y-%m-%d)/full.xbstream.incomplete
+    fi
+
+    if [ -f $BACKUPDIR/$(date +%Y-%m-%d)/incremental-$(date +%H).xbstream ] ; then
+       rm $BACKUPDIR/$(date +%Y-%m-%d)/incremental-$(date +%H).xbstream
+    fi
+
+    if [ -f $BACKUPDIR/$(date +%Y-%m-%d)/incremental-$(date +%H).xbstream.incomplete ] ; then
+        rm $BACKUPDIR/$(date +%Y-%m-%d)/incremental-$(date +%H).xbstream.incomplete
+    fi
+
+    if [ -f $BACKUPDIR/$(date +%Y-%m-%d)/full.xbstream ] ; then
+        LASTLSN=$(cat $EXTRADIR/$(date +%Y-%m-%d)/xtrabackup_checkpoints | grep to_lsn | awk '{print $3}')
+        LAST_LOGFILE="$LOGDIR/$(date +%Y-%m-%d)/$(ls -tr $LOGDIR/$(date +%Y-%m-%d) | tail -1)"
+        if [ -f $LAST_LOGFILE ] ; then
+            to_lsn=$(tail -n 20 $LAST_LOGFILE | grep -E "The latest check point" | grep -Eo '[0-9]+')
+            if [ ! -z $to_lsn ] ; then
+                LASTLSN=$to_lsn
+            fi
+        fi
+        if [ -z $LASTLSN ] ; then
+            echo "증분 백업파일에 LSN정보를 확인할 수 없습니다."
+            exit 1
+        fi
+        echo "증분 백업 실행"
+        echo "$XTRABACKUP $BACKUP_ARGS --incremental-lsn=$LASTLSN --incremental-history-name=$(date +%Y-%m-%d) --history=$(date +%Y-%m-%d) --target-dir=$BACKUPDIR/$(date +%Y-%m-%d) > $BACKUPDIR/$(date +%Y-%m-%d)/incremental-$(date +%H).xbstream" 1>> $LOGDIR/$(date +%Y-%m-%d)/incremental-$(date +%H).log
+        $XTRABACKUP $BACKUP_ARGS --incremental-lsn=$LASTLSN --history=$(date +%Y-%m-%d) --target-dir=$BACKUPDIR/$(date +%Y-%m-%d) > $BACKUPDIR/$(date +%Y-%m-%d)/incremental-$(date +%H).xbstream.incomplete 2>> $LOGDIR/$(date +%Y-%m-%d)/incremental-$(date +%H).log
+        mv $BACKUPDIR/$(date +%Y-%m-%d)/incremental-$(date +%H).xbstream.incomplete $BACKUPDIR/$(date +%Y-%m-%d)/incremental-$(date +%H).xbstream
+    else
+        echo "전체 백업 실행"
+        echo "$XTRABACKUP $BACKUP_ARGS --extra-lsndir=$EXTRADIR/$(date +%Y-%m-%d) --history=$(date +%Y-%m-%d) --target-dir=$BACKUPDIR/$(date +%Y-%m-%d) > $BACKUPDIR/$(date +%Y-%m-%d)/full.xbstream" 1>> $LOGDIR/$(date +%Y-%m-%d)/full.log
+        $XTRABACKUP $BACKUP_ARGS --extra-lsndir="$EXTRADIR/$(date +%Y-%m-%d)" --history=$(date +%Y-%m-%d) --target-dir=$BACKUPDIR/$(date +%Y-%m-%d) > $BACKUPDIR/$(date +%Y-%m-%d)/full.xbstream.incomplete 2>> $LOGDIR/$(date +%Y-%m-%d)/full.log
+        mv $BACKUPDIR/$(date +%Y-%m-%d)/full.xbstream.incomplete $BACKUPDIR/$(date +%Y-%m-%d)/full.xbstream
+    fi
+
+    echo "백업 끝"
+}
+
+function restore() {
+    echo "경고: 복구를 계속 진행 하시겠습니까? (1 또는 2를 입력하세요)"
+        select yn in "yes" "no"; do
+            case $yn in
+                yes ) break;;
+                no ) exit;;
+            esac
+        done
+
+    echo "데이터 복구 시작"
+
+    if [ -f $EXTRADIR/full-$RESTORE_DATE/xtrabackup_info.qp ] ; then
+        rm $EXTRADIR/full-$RESTORE_DATE/xtrabackup_info.qp
+    fi
+
+    if [ -d $RESTOREDIR ] ; then
+        rm -rf $RESTOREDIR
+    fi
+    mkdir -p $RESTOREDIR/tmp
+    mkdir -p $RESTOREDIR/full
+    mkdir -p $RESTOREDIR/incr
+
+    service mysql stop
+
+    # 기존 mysql data 폴더 백업
+    for i in `seq 1 23`
+    do
+        if [ -d  /tmp/$SCRIPTNAME/$RESTORE_DATE-$i ] ; then
+            mv $DATADIR /tmp/$SCRIPTNAME/$RESTORE_DATE-$i
+            break
+        fi
+    done
+    mkdir -p $DATADIR
+
+    echo "stream 해제"
+    echo "cat $RESTOREDIR/tmp/full-$RESTORE_DATE.xbstream | sudo xbstream -x -C $RESTOREDIR/full"
+    cp $BACKUPDIR/$RESTORE_DATE/full.xbstream $RESTOREDIR/tmp/full-$RESTORE_DATE.xbstream
+    cat $RESTOREDIR/tmp/full-$RESTORE_DATE.xbstream | sudo xbstream -x -C $RESTOREDIR/full
+
+    echo "압축 푸는중"
+    echo "$XTRABACKUP $RESTORE_ARGS --decompress --target-dir=$RESTOREDIR/full"
+    $XTRABACKUP $RESTORE_ARGS --decompress --target-dir=$RESTOREDIR/full
+    find $RESTOREDIR/full -name "*.qp" -exec rm {} \;
+
+    echo "$XTRABACKUP --prepare --target-dir=$RESTOREDIR/full --apply-log-only" 1>> $LOGDIR/restore-$(date +%Y-%m-%d).log
+    $XTRABACKUP $RESTORE_ARGS --prepare --target-dir=$RESTOREDIR/full --apply-log-only
+
+    # 증분 백업 파일이 존재할때
+    for i in `seq 1 23`
+    do
+        FILEPATH=$BACKUPDIR/$(date +%Y-%m-%d)/incremental-$i.xbstream
+        if [ ! -f $FILEPATH ] ; then
+            continue
+        fi
+        FILENAME=incremental-$i.xbstream
+        rm -rf $RESTOREDIR/incr
+        mkdir -p $RESTOREDIR/incr
+
+        echo "증분 백업파일 '$FILEPATH'"
+        echo "cat $RESTOREDIR/tmp/$FILENAME | sudo xbstream -x -C $RESTOREDIR/incr" 1>> $LOGDIR/restore-$(date +%Y-%m-%d).log
+        cp $FILEPATH $RESTOREDIR/tmp/$FILENAME
+        cat $RESTOREDIR/tmp/$FILENAME | sudo xbstream -x -C $RESTOREDIR/incr
+        echo "$XTRABACKUP $RESTORE_ARGS --decompress $RESTOREDIR/incr" 1>> $LOGDIR/restore-$(date +%Y-%m-%d).log
+        $XTRABACKUP $RESTORE_ARGS --decompress --target-dir=$RESTOREDIR/incr
+        find $RESTOREDIR/incr -name "*.qp" -exec rm {} \;
+        echo "전체 백업과 증분 백업 합치기..."
+        echo "$XTRABACKUP $RESTORE_ARGS --prepare --target-dir=$RESTOREDIR/full --incremental-dir=$RESTOREDIR/incr --apply-log-only" 1>> $LOGDIR/restore-$(date +%Y-%m-%d).log
+        $XTRABACKUP $RESTORE_ARGS --prepare --target-dir=$RESTOREDIR/full --incremental-dir=$RESTOREDIR/incr --apply-log-only
+    done
+
+    echo "데이터 복구 실행..."
+    echo "$XTRABACKUP $RESTORE_ARGS --copy-back --datadir=$DATADIR --target-dir=$RESTOREDIR/full" 1>> $LOGDIR/restore-$(date +%Y-%m-%d).log
+    $XTRABACKUP $RESTORE_ARGS --copy-back --datadir=$DATADIR --target-dir=$RESTOREDIR/full 2>> $LOGDIR/restore-$(date +%Y-%m-%d).log
+
+    chown -R mysql:mysql $DATADIR
+
+    service mysql start
+
+    echo "데이터 복구 끝"
+}
+
+function setoptions() {
+    shift 1
+    while getopts h:u:p:P:d:r:e:w:t: OPT; do
+        case $OPT in
+            h)
+                HOST=$OPTARG
+                ;;
+            u)
+                USER=$OPTARG
+                ;;
+            p)
+                PASS=$OPTARG
+                ;;
+            P)
+                PORT=$OPTARG
+                ;;
+            d)
+                DATADIR=$OPTARG
+                ;;
+            r)
+                RESTORE_DATE=$OPTARG
+                ;;
+            e)
+                EXPIRE_DAYS=$OPTARG
+                ;;
+            w)
+                WORKDIR=$OPTARG
+                ;;
+            t)
+                PROCESSORS=$OPTARG
+                ;;
+        esac
+    done
+    if [ -z $PASS ] ; then
+        usage
+        exit 1
+    fi
+    BACKUP_ARGS="--host=$HOST --port=$PORT --user=$USER --password=$PASS --backup --safe-slave-backup --use-memory=2G --stream=xbstream --parallel=$PROCESSORS --compress --compress-threads=$PROCESSORS"
+    BACKUPDIR="$WORKDIR/backups"
+    EXTRADIR="$WORKDIR/extras"
+    LOGDIR="$WORKDIR/logs"
+    RESTORE_ARGS="--host=$HOST --port=$PORT --user=$USER --password=$PASS --use-memory=1G --parallel=$PROCESSORS"
+    RESTOREDIR="$WORKDIR/restore"
+}
+
+function remove_expire_backup_files() {
+    DIR=$BACKUPDIR/$(date --date="$EXPIRE_DAYS days ago" +%Y%m%d)
+    if [ -d $DIR ] ; then
+        rm -rf $DIR
+    fi
+}
+
+
+if [ $# -eq 0 ]
+ then
+   usage
+   exit 1
+fi
+
+case $1 in
+    backup)
+        remove_expire_backup_files
+        setoptions "$@";
+        backup
+        ;;
+    restore)
+        setoptions "$@";
+        restore
+        ;;
+    *)
+        usage;;
+esac
