@@ -106,7 +106,7 @@ function backup() {
             fi
         fi
         if [ -z $LASTLSN ] ; then
-            echo "증분 백업파일에 LSN정보를 확인할 수 없습니다."
+            echo "증분 백업 파일에 LSN 정보를 확인할 수 없습니다." 1>> $LOGDIR/$(date +%Y-%m-%d)/incremental-$(date +%H).log
             exit 1
         fi
         echo "증분 백업 실행"
