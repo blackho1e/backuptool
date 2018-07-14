@@ -12,24 +12,23 @@ backuptool를 사용하려면 Percona XtraBackup이 설치된 환경에서 사�
 ```
 yum install -y epel-release
 yum install -y libev
-yum install http://www.percona.com/downloads/percona-release/redhat/0.1-4/percona-release-0.1-4.noarch.rpm
+yum install -y http://www.percona.com/downloads/percona-release/redhat/0.1-4/percona-release-0.1-4.noarch.rpm
 yum install -y percona-xtrabackup-24 qpress
 ```
 
-## backuptool 설치 방법
+## Install
 ```
-sudo curl -L https://github.com/blackho1e/backuptool/raw/master/backuptool -o /usr/local/bin/backuptool
-sudo chmod +x /usr/local/bin/backuptool
-```
-
-## 백업 방법
-```
-backuptool backup -u 계정 -p 암호 -w 백업할 경로
+$ sudo curl -L https://github.com/blackho1e/backuptool/raw/master/backuptool -o /usr/local/bin/backuptool
+$ sudo chmod +x /usr/local/bin/backuptool
 ```
 
-## 복구 방법
+## Usage
 ```
-backuptool restore -u 계정 -p 암호 -w 백업한 경로 -r 복구할날짜
+$ # 백업방법
+$ backuptool backup -u 계정 -p 암호 -w 백업할 경로
+
+$ # 복구방법
+$ backuptool restore -u 계정 -p 암호 -w 백업한 경로 -r 복구할날짜
 ```
 
 ## Crontab 등록
