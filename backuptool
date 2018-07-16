@@ -1,11 +1,11 @@
 #!/bin/bash
 # author : kmj@infose.net
-# date : 2018/07/13
+# date : 2018/07/16
 
 set -e
 
 
-VERSION=v0.0.3
+VERSION=v0.0.4
 SCRIPTNAME=$(basename $0)
 HOST="localhost"
 PORT="3306"
@@ -104,11 +104,13 @@ function backup() {
 
     if [ -f $BACKUPDIR/$(date +%Y-%m-%d)/full.xbstream ] ; then
         LASTLSN=$(cat $EXTRADIR/$(date +%Y-%m-%d)/xtrabackup_checkpoints | grep to_lsn | awk '{print $3}')
-        LAST_LOGFILE="$LOGDIR/$(date +%Y-%m-%d)/$(ls -tr $LOGDIR/$(date +%Y-%m-%d) | tail -1)"
-        if [ -f $LAST_LOGFILE ] ; then
-            to_lsn=$(tail -n 20 $LAST_LOGFILE | grep -E "The latest check point" | grep -Eo '[0-9]+')
-            if [ ! -z $to_lsn ] ; then
-                LASTLSN=$to_lsn
+        if [ -z $LASTLSN ] ; then
+            LAST_LOGFILE="$LOGDIR/$(date +%Y-%m-%d)/$(ls -tr $LOGDIR/$(date +%Y-%m-%d) | tail -1)"
+            if [ -f $LAST_LOGFILE ] ; then
+                to_lsn=$(tail -n 20 $LAST_LOGFILE | grep -E "The latest check point" | grep -Eo '[0-9]+')
+                if [ ! -z $to_lsn ] ; then
+                    LASTLSN=$to_lsn
+                fi
             fi
         fi
         _echo "LASTLSN: $LASTLSN"
@@ -271,20 +273,16 @@ function parseargs() {
 }
 
 function remove_expire_backup_files() {
-    DIR=$LOGDIR/$(date --date="$EXPIRE_DAYS days ago" +%Y-%m-%d)
-    if [ -d $DIR ] ; then
-        rm -rf $DIR
-    fi
-
-    DIR=$EXTRADIR/$(date --date="$EXPIRE_DAYS days ago" +%Y-%m-%d)
-    if [ -d $DIR ] ; then
-        rm -rf $DIR
-    fi
-
-    DIR=$BACKUPDIR/$(date --date="$EXPIRE_DAYS days ago" +%Y-%m-%d)
-    if [ -d $DIR ] ; then
-        rm -rf $DIR
-    fi
+    for i in `seq 0 2`; do
+        d=$(($EXPIRE_DAYS + $i))
+        EXPIREDAY=$(date --date="$d days ago" +%Y-%m-%d)
+        DIRS=("$LOGDIR/$EXPIREDAY" "$EXTRADIR/$EXPIREDAY" "$BACKUPDIR/$EXPIREDAY")
+        for DIR in "${DIRS[@]}"; do
+            if [ -d $DIR ] ; then
+                rm -rf $DIR
+            fi
+        done
+    done
 }
 
 
